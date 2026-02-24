@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.routes import auth, patients, medical_records, queue
+from mangum import Mangum
 
 Base.metadata.create_all(bind=engine)
 
@@ -35,5 +36,5 @@ def root():
 def health():
     return {"status": "healthy"}
 
-# Vercel handler
-handler = app
+# Vercel handler for serverless
+handler = Mangum(app)
