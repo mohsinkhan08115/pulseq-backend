@@ -50,4 +50,3 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
-
