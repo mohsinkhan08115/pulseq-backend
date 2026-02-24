@@ -2,14 +2,18 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# ✅ Your project imports
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.routes import auth, patients, medical_records, queue
-from mangum import Mangum
 
-# Create tables (optional, you can comment out temporarily for testing)
+from mangum import Mangum  # Vercel serverless adapter
+
+# Optional: create tables (you can comment this for testing)
 Base.metadata.create_all(bind=engine)
 
+# Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
@@ -27,13 +31,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include your routers
+# Include routers
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(medical_records.router)
 app.include_router(queue.router)
 
-# ✅ Add this test endpoint
+# ✅ Test endpoint
 @app.get("/test")
 def test():
     return {"status": "working"}
