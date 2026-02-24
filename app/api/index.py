@@ -4,7 +4,6 @@ from app.core.config import settings
 from app.core.database import engine, Base
 from app.routes import auth, patients, medical_records, queue
 
-# Create all DB tables on startup
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -15,7 +14,6 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS — allow Flutter app to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,
@@ -24,7 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register all routers
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(medical_records.router)
@@ -37,3 +34,6 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+# Vercel handler
+handler = app
