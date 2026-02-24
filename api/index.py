@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.database import engine, Base
 from app.routes import auth, patients, medical_records, queue
 
-from mangum import Mangum  # Vercel serverless adapter
+
 
 # Optional: create tables (you can comment this for testing)
 Base.metadata.create_all(bind=engine)
@@ -51,5 +51,3 @@ def root():
 def health():
     return {"status": "healthy"}
 
-# Vercel serverless handler
-handler = Mangum(app)
