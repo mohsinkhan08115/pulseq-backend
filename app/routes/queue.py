@@ -8,7 +8,7 @@ from app.services.queue_service import (
     calculate_position, estimate_wait_time, create_queue_entry,
     check_in_patient, start_consultation, complete_consultation, get_doctor_queue
 )
-from app.core.database import db
+from app.core.database import get_ref
 
 router = APIRouter(prefix="/queue", tags=["Queue Management"])
 
@@ -19,14 +19,12 @@ def get_doctor_id(authorization: Optional[str] = Header(None)) -> str:
     return doctor_id
 
 def _build_queue_dict(entry: dict) -> dict:
-    doctor_doc = db.collection("doctors").document(entry["doctor_id"]).get()
-    doctor_name = doctor_doc.to_dict().get("name", "") if doctor_doc.exists else ""
-    patient_doc = db.collection("patients").document(entry["patient_id"]).get()
-    patient_name = patient_doc.to_dict().get("name", "") if patient_doc.exists else ""
+    doctor = get_ref(f"doctors/{entry['doctor_id']}").get() or {}
+    patient = get_ref(f"patients/{entry['patient_id']}").get() or {}
     return {
         "token_number": entry["token_number"],
-        "patient_name": patient_name,
-        "doctor_name": doctor_name,
+        "patient_name": patient.get("name", ""),
+        "doctor_name": doctor.get("name", ""),
         "current_serving_token": get_current_serving_token(entry["doctor_id"]),
         "position_in_queue": calculate_position(entry),
         "status": entry["status"],
