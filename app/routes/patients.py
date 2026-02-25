@@ -2,11 +2,11 @@ from fastapi import APIRouter, HTTPException, status, Depends, Header, Query
 from typing import Optional
 from app.core.security import verify_token_header
 from app.schemas.patient import PatientResponse, PatientSearchResponse, PatientCreate
+from app.core.firebase import get_ref
 from app.services.patient_service import (
     search_patients, get_patient_by_id, has_doctor_access,
     create_patient, link_doctor_to_patient, get_all_doctor_patients
 )
-from app.core.database import db
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
 
@@ -32,35 +32,49 @@ def my_patients(doctor_id: str = Depends(get_doctor_id)):
 
 @router.post("/", response_model=PatientResponse, status_code=201)
 def add_patient(data: PatientCreate, doctor_id: str = Depends(get_doctor_id)):
+    patients_ref = get_ref("patients")
+    all_patients = patients_ref.get() or {}
+
     # Check duplicates
-    existing_email = db.collection("patients").where("email", "==", data.email).limit(1).stream()
-    for _ in existing_email:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    for patient_id, patient in all_patients.items():
+        if patient.get("email") == data.email:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        if patient.get("phone") == data.phone:
+            raise HTTPException(status_code=400, detail="Phone already registered")
 
-    existing_phone = db.collection("patients").where("phone", "==", data.phone).limit(1).stream()
-    for _ in existing_phone:
-        raise HTTPException(status_code=400, detail="Phone already registered")
+    # Add patient
+    new_patient_ref = patients_ref.push({
+        "name": data.name,
+        "email": data.email,
+        "phone": data.phone,
+        "date_of_birth": data.date_of_birth,
+        "location": data.location,
+        "medical_history_summary": data.medical_history_summary,
+        "linked_doctors": [doctor_id]
+    })
 
-    patient = create_patient(
-        name=data.name, email=data.email, phone=data.phone,
-        date_of_birth=data.date_of_birth, location=data.location,
-        medical_history_summary=data.medical_history_summary,
-    )
-    link_doctor_to_patient(doctor_id, patient["id"])
+    patient = {"id": new_patient_ref.key, **data.dict()}
     return patient
 
 @router.get("/{patient_id}", response_model=PatientResponse)
 def get_patient(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
-    if not has_doctor_access(doctor_id, patient_id):
-        raise HTTPException(status_code=403, detail="No access to this patient")
-    patient = get_patient_by_id(patient_id)
+    patient = get_ref(f"patients/{patient_id}").get()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
-    return patient
+    if doctor_id not in patient.get("linked_doctors", []):
+        raise HTTPException(status_code=403, detail="No access to this patient")
+    return {"id": patient_id, **patient}
 
 @router.post("/{patient_id}/link")
 def link_patient(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
-    if not get_patient_by_id(patient_id):
+    patient_ref = get_ref(f"patients/{patient_id}")
+    patient = patient_ref.get()
+    if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
-    link_doctor_to_patient(doctor_id, patient_id)
+
+    linked_doctors = patient.get("linked_doctors", [])
+    if doctor_id not in linked_doctors:
+        linked_doctors.append(doctor_id)
+        patient_ref.update({"linked_doctors": linked_doctors})
+
     return {"success": True, "message": "Patient linked successfully"}
