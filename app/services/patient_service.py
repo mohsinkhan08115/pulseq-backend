@@ -1,71 +1,66 @@
 from typing import List, Optional
-from sqlalchemy.orm import Session
-from app.models.models import Doctor, Patient, doctor_patient
+from app.core.database import get_ref
+import uuid
 
-def has_doctor_access(db: Session, doctor_id: int, patient_id: int) -> bool:
-    result = db.execute(
-        doctor_patient.select().where(
-            doctor_patient.c.doctor_id == doctor_id,
-            doctor_patient.c.patient_id == patient_id
-        )
-    ).first()
-    return result is not None
 
-def link_doctor_to_patient(db: Session, doctor_id: int, patient_id: int):
-    if not has_doctor_access(db, doctor_id, patient_id):
-        db.execute(
-            doctor_patient.insert().values(
-                doctor_id=doctor_id, patient_id=patient_id
-            )
-        )
-        db.commit()
+def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
+    link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
+    return link is not None
 
-def search_patients(
-    db: Session, query: str, search_type: str, doctor_id: int
-) -> List[Patient]:
-    base = (
-        db.query(Patient)
-        .join(doctor_patient, Patient.id == doctor_patient.c.patient_id)
-        .filter(doctor_patient.c.doctor_id == doctor_id)
-        .filter(Patient.is_active == True)
-    )
+
+def link_doctor_to_patient(doctor_id: str, patient_id: str):
+    if not has_doctor_access(doctor_id, patient_id):
+        get_ref(f"doctor_patient/{doctor_id}_{patient_id}").set({
+            "doctor_id": doctor_id,
+            "patient_id": patient_id,
+        })
+
+
+def get_patient_by_id(patient_id: str) -> Optional[dict]:
+    data = get_ref(f"patients/{patient_id}").get()
+    if data:
+        data["id"] = patient_id
+    return data
+
+
+def get_all_doctor_patients(doctor_id: str) -> List[dict]:
+    all_links = get_ref("doctor_patient").get() or {}
+    patients = []
+    for key, link in all_links.items():
+        if link.get("doctor_id") == doctor_id:
+            patient = get_patient_by_id(link["patient_id"])
+            if patient and patient.get("is_active", True):
+                patients.append(patient)
+    return patients
+
+
+def search_patients(query: str, search_type: str, doctor_id: str) -> List[dict]:
+    all_patients = get_all_doctor_patients(doctor_id)
+    query_lower = query.lower()
     if search_type == "name":
-        return base.filter(Patient.name.ilike(f"%{query}%")).all()
+        return [p for p in all_patients if query_lower in p.get("name", "").lower()]
     elif search_type == "id":
-        try:
-            return base.filter(Patient.id == int(query)).all()
-        except ValueError:
-            return []
+        return [p for p in all_patients if p["id"] == query]
     elif search_type == "phone":
-        return base.filter(Patient.phone.contains(query)).all()
+        return [p for p in all_patients if query in p.get("phone", "")]
     return []
 
-def get_all_doctor_patients(db: Session, doctor_id: int) -> List[Patient]:
-    return (
-        db.query(Patient)
-        .join(doctor_patient, Patient.id == doctor_patient.c.patient_id)
-        .filter(doctor_patient.c.doctor_id == doctor_id)
-        .filter(Patient.is_active == True)
-        .all()
-    )
 
-def get_patient_by_id(db: Session, patient_id: int) -> Optional[Patient]:
-    return db.query(Patient).filter(
-        Patient.id == patient_id, Patient.is_active == True
-    ).first()
-
-def create_patient(
-    db: Session, name: str, email: str, phone: str,
-    date_of_birth: str, location: str,
-    medical_history_summary: Optional[str] = None
-) -> Patient:
-    patient = Patient(
-        name=name, email=email, phone=phone,
-        date_of_birth=date_of_birth, location=location,
-        medical_history_summary=medical_history_summary,
-        total_visits=0,
-    )
-    db.add(patient)
-    db.commit()
-    db.refresh(patient)
-    return patient
+def create_patient(name: str, email: str, phone: str,
+                   date_of_birth: str, location: str,
+                   medical_history_summary: Optional[str] = None) -> dict:
+    patient_id = str(uuid.uuid4())
+    patient_data = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "date_of_birth": date_of_birth,
+        "location": location,
+        "medical_history_summary": medical_history_summary,
+        "total_visits": 0,
+        "last_visit": None,
+        "is_active": True,
+    }
+    get_ref(f"patients/{patient_id}").set(patient_data)
+    patient_data["id"] = patient_id
+    return patient_data

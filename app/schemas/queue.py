@@ -2,8 +2,8 @@ from pydantic import BaseModel
 from typing import Optional
 
 class QueueCreate(BaseModel):
-    patient_id: int
-    doctor_id: int
+    patient_id: str
+    doctor_id: str
     appointment_time: str  # ISO format
 
 class QueueStatusResponse(BaseModel):

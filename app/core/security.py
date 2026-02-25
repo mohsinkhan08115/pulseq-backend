@@ -31,8 +31,8 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def verify_token_header(authorization: Optional[str]) -> Optional[int]:
-    """Extract doctor_id from 'Authorization: Bearer <token>' header."""
+def verify_token_header(authorization: Optional[str]) -> Optional[str]:
+    """Extract doctor_id (str) from 'Authorization: Bearer <token>' header."""
     if not authorization:
         return None
     parts = authorization.split()
@@ -41,7 +41,4 @@ def verify_token_header(authorization: Optional[str]) -> Optional[int]:
     payload = decode_token(parts[1])
     if not payload:
         return None
-    try:
-        return int(payload.get("sub"))
-    except (TypeError, ValueError):
-        return None
+    return payload.get("sub")

@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 
 class MedicalRecordCreate(BaseModel):
-    patient_id: int
+    patient_id: str
     diagnosis: str
     visit_date: str
     symptoms: List[str]
@@ -19,10 +19,10 @@ class MedicalRecordUpdate(BaseModel):
     vital_signs: Optional[Dict[str, str]] = None
 
 class MedicalRecordResponse(BaseModel):
-    id: int
-    patient_id: int
+    id: str
+    patient_id: str
     patient_name: str
-    doctor_id: int
+    doctor_id: str
     doctor_name: str
     diagnosis: str
     visit_date: str

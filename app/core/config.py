@@ -3,13 +3,13 @@ from typing import List
 
 class Settings(BaseSettings):
     APP_NAME: str = "PulseQ Medical API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "1.0.1"
     DEBUG: bool = False
-    DATABASE_URL: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     ALLOWED_ORIGINS: str = "*"
+    FIREBASE_CREDENTIALS: str = ""
 
     @property
     def allowed_origins_list(self) -> List[str]:

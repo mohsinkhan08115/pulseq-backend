@@ -1,24 +1,23 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from app.core.config import settings
+import os
+import json
+import firebase_admin
+from firebase_admin import credentials, db as rtdb
 
-# SQLite needs this extra argument, PostgreSQL does not
-connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+FIREBASE_DB_URL = "https://pulseq-6dfd0-default-rtdb.firebaseio.com"
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args=connect_args,
-    pool_pre_ping=True,
-    echo=settings.DEBUG,
-)
+def init_firebase():
+    if not firebase_admin._apps:
+        cred_json = os.environ.get("FIREBASE_CREDENTIALS")
+        if cred_json:
+            cred_dict = json.loads(cred_json)
+            cred = credentials.Certificate(cred_dict)
+        else:
+            cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred, {
+            "databaseURL": FIREBASE_DB_URL
+        })
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+init_firebase()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def get_ref(path: str):
+    return rtdb.reference(path)

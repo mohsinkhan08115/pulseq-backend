@@ -10,13 +10,13 @@ class PatientCreate(BaseModel):
     medical_history_summary: Optional[str] = None
 
 class PatientResponse(BaseModel):
-    id: int
+    id: str
     name: str
     email: str
     phone: str
     date_of_birth: str
     location: str
-    total_visits: int
+    total_visits: int = 0
     last_visit: Optional[str] = None
     medical_history_summary: Optional[str] = None
 

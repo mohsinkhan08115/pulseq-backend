@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-sqlalchemy
+firebase-admin
 python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
@@ -10,4 +10,3 @@ python-multipart
 bcrypt
 email-validator
 mangum
-psycopg2-binary
