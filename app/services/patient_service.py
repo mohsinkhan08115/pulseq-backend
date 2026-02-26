@@ -2,11 +2,9 @@ from typing import List, Optional
 from app.core.database import get_ref
 import uuid
 
-
 def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
     link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
     return link is not None
-
 
 def link_doctor_to_patient(doctor_id: str, patient_id: str):
     if not has_doctor_access(doctor_id, patient_id):
@@ -15,13 +13,11 @@ def link_doctor_to_patient(doctor_id: str, patient_id: str):
             "patient_id": patient_id,
         })
 
-
 def get_patient_by_id(patient_id: str) -> Optional[dict]:
     data = get_ref(f"patients/{patient_id}").get()
     if data:
         data["id"] = patient_id
     return data
-
 
 def get_all_doctor_patients(doctor_id: str) -> List[dict]:
     all_links = get_ref("doctor_patient").get() or {}
@@ -33,18 +29,22 @@ def get_all_doctor_patients(doctor_id: str) -> List[dict]:
                 patients.append(patient)
     return patients
 
-
 def search_patients(query: str, search_type: str, doctor_id: str) -> List[dict]:
     all_patients = get_all_doctor_patients(doctor_id)
-    query_lower = query.lower()
+    query_lower = query.lower().strip()
+    # Remove spaces for phone comparison
+    query_nospace = query_lower.replace(" ", "").replace("-", "")
+
     if search_type == "name":
         return [p for p in all_patients if query_lower in p.get("name", "").lower()]
     elif search_type == "id":
-        return [p for p in all_patients if p["id"] == query]
+        return [p for p in all_patients if query_lower in p["id"].lower()]
     elif search_type == "phone":
-        return [p for p in all_patients if query in p.get("phone", "")]
+        return [
+            p for p in all_patients
+            if query_nospace in p.get("phone", "").replace(" ", "").replace("-", "")
+        ]
     return []
-
 
 def create_patient(name: str, email: str, phone: str,
                    date_of_birth: str, location: str,
