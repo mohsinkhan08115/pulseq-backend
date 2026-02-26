@@ -6,10 +6,6 @@ def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
     link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
     return link is not None
 
-def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
-    link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
-    return link is not None
-
 def link_doctor_to_patient(doctor_id: str, patient_id: str):
     if not has_doctor_access(doctor_id, patient_id):
         get_ref(f"doctor_patient/{doctor_id}_{patient_id}").set({
@@ -35,14 +31,17 @@ def get_all_doctor_patients(doctor_id: str) -> List[dict]:
 
 def search_patients(query: str, search_type: str, doctor_id: str) -> List[dict]:
     all_patients = get_all_doctor_patients(doctor_id)
-    query_lower = query.lower().strip()
-    # Remove spaces for phone comparison
-    query_nospace = query_lower.replace(" ", "").replace("-", "")
+    query_stripped = query.strip()
+    query_nospace = query_stripped.replace(" ", "").replace("-", "")
 
     if search_type == "name":
-        return [p for p in all_patients if query_lower in p.get("name", "").lower()]
+        return [p for p in all_patients if query_stripped.lower() in p.get("name", "").lower()]
     elif search_type == "id":
-        return [p for p in all_patients if query_lower in p["id"].lower()]
+        # EXACT match by patient_number (1=Hamda, 2=Ali, 3=Fatima, 4=Usman)
+        return [
+            p for p in all_patients
+            if str(p.get("patient_number", "")) == query_stripped
+        ]
     elif search_type == "phone":
         return [
             p for p in all_patients
@@ -53,6 +52,9 @@ def search_patients(query: str, search_type: str, doctor_id: str) -> List[dict]:
 def create_patient(name: str, email: str, phone: str,
                    date_of_birth: str, location: str,
                    medical_history_summary: Optional[str] = None) -> dict:
+    all_patients = get_ref("patients").get() or {}
+    max_number = max((p.get("patient_number", 0) for p in all_patients.values()), default=0)
+
     patient_id = str(uuid.uuid4())
     patient_data = {
         "name": name,
@@ -64,6 +66,7 @@ def create_patient(name: str, email: str, phone: str,
         "total_visits": 0,
         "last_visit": None,
         "is_active": True,
+        "patient_number": max_number + 1,
     }
     get_ref(f"patients/{patient_id}").set(patient_data)
     patient_data["id"] = patient_id
