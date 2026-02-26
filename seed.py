@@ -10,10 +10,11 @@ from app.core.security import get_password_hash
 import uuid
 
 def seed():
-    existing = get_ref("doctors").get()
-    if existing:
-        print("Already seeded — skipping.")
-        return
+    # Clear existing data
+    get_ref("doctors").delete()
+    get_ref("patients").delete()
+    get_ref("doctor_patient").delete()
+    get_ref("medical_records").delete()
 
     print("Seeding Firebase Realtime Database...")
 
@@ -39,24 +40,28 @@ def seed():
         doc_ids.append(did)
     print(f"  {len(doctors)} doctors created")
 
-    # Patients
+    # Patients — with numeric patient_number
     patients = [
         {"name": "Hamda",        "email": "hamda@example.com",
-         "phone": "+92 300 0000001", "date_of_birth": "2004-03-09",
+         "phone": "+923000000001", "date_of_birth": "2004-03-09",
          "location": "Lahore",    "total_visits": 5, "last_visit": "2025-02-05",
-         "medical_history_summary": "Regular checkups", "is_active": True},
+         "medical_history_summary": "Regular checkups", "is_active": True,
+         "patient_number": 1},
         {"name": "Ali Khan",     "email": "ali@example.com",
-         "phone": "+92 321 0000002", "date_of_birth": "1990-05-15",
+         "phone": "+923210000002", "date_of_birth": "1990-05-15",
          "location": "Karachi",   "total_visits": 8, "last_visit": "2025-02-03",
-         "medical_history_summary": "Hypertension patient", "is_active": True},
+         "medical_history_summary": "Hypertension patient", "is_active": True,
+         "patient_number": 2},
         {"name": "Fatima Ahmed", "email": "fatima@example.com",
-         "phone": "+92 333 0000003", "date_of_birth": "1985-08-20",
+         "phone": "+923330000003", "date_of_birth": "1985-08-20",
          "location": "Islamabad", "total_visits": 12, "last_visit": "2025-02-01",
-         "medical_history_summary": "Diabetes Type 2", "is_active": True},
+         "medical_history_summary": "Diabetes Type 2", "is_active": True,
+         "patient_number": 3},
         {"name": "Usman Raza",   "email": "usman@example.com",
-         "phone": "+92 345 0000004", "date_of_birth": "1995-12-10",
+         "phone": "+923450000004", "date_of_birth": "1995-12-10",
          "location": "Lahore",    "total_visits": 3, "last_visit": "2025-01-28",
-         "medical_history_summary": "Asthma patient", "is_active": True},
+         "medical_history_summary": "Asthma patient", "is_active": True,
+         "patient_number": 4},
     ]
     pat_ids = []
     for p in patients:
@@ -114,6 +119,11 @@ def seed():
     print("  ahmed@pulseq.com  / doctor123")
     print("  sarah@pulseq.com  / doctor456")
     print("  hassan@pulseq.com / doctor789")
+    print("\nPatient numbers:")
+    print("  1 = Hamda       | +923000000001")
+    print("  2 = Ali Khan    | +923210000002")
+    print("  3 = Fatima Ahmed| +923330000003")
+    print("  4 = Usman Raza  | +923450000004")
 
 if __name__ == "__main__":
     seed()

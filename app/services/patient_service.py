@@ -6,6 +6,10 @@ def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
     link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
     return link is not None
 
+def has_doctor_access(doctor_id: str, patient_id: str) -> bool:
+    link = get_ref(f"doctor_patient/{doctor_id}_{patient_id}").get()
+    return link is not None
+
 def link_doctor_to_patient(doctor_id: str, patient_id: str):
     if not has_doctor_access(doctor_id, patient_id):
         get_ref(f"doctor_patient/{doctor_id}_{patient_id}").set({
