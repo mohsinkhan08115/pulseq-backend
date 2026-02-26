@@ -5,7 +5,7 @@ from app.schemas.medical_record import (
     MedicalRecordCreate, MedicalRecordUpdate,
     MedicalRecordResponse, MedicalRecordsListResponse
 )
-from app.services.med_record_service import (
+from app.services.medical_record_service import (
     get_medical_records, create_medical_record, update_medical_record
 )
 from app.services.patient_service import get_patient_by_id, has_doctor_access
