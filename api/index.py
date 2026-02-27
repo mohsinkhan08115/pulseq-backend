@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.routes import auth, patients, medical_records, queue
+from app.routes import auth, patients, medical_records, queue, patient_auth
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -23,6 +23,7 @@ app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(medical_records.router)
 app.include_router(queue.router)
+app.include_router(patient_auth.router)
 
 @app.get("/test")
 def test():
