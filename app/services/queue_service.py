@@ -24,6 +24,18 @@ def get_active_queue_for_patient(patient_id: str) -> Optional[dict]:
     return None
 
 
+def get_active_queue_for_patient_and_doctor(patient_id: str, doctor_id: str) -> Optional[dict]:
+    """Check if patient already has active token with this specific doctor."""
+    all_entries = get_ref("queue_entries").get() or {}
+    for entry_id, entry in all_entries.items():
+        if (entry.get("patient_id") == patient_id and
+                entry.get("doctor_id") == doctor_id and
+                entry.get("status") in ["confirmed", "waiting", "serving"]):
+            entry["id"] = entry_id
+            return entry
+    return None
+
+
 def get_current_serving_token(doctor_id: str) -> int:
     all_entries = get_ref("queue_entries").get() or {}
     for entry in all_entries.values():
@@ -124,7 +136,6 @@ def ai_predict_wait_time(entry: dict) -> dict:
     )
     confidence = min(95, 60 + (all_durations_count * 2))
 
-    # ✅ KEY FIX: Use Z suffix so Flutter knows this is UTC and converts to local time
     estimated_dt = now + timedelta(minutes=final_estimate)
     estimated_time_str = estimated_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -149,7 +160,8 @@ def estimate_wait_time(entry: dict) -> dict:
 
 
 def book_token(patient_id: str, doctor_id: str) -> dict:
-    existing = get_active_queue_for_patient(patient_id)
+    # Check per doctor — same patient can book with different doctors
+    existing = get_active_queue_for_patient_and_doctor(patient_id, doctor_id)
     if existing and existing.get("booking_type") == "token":
         prediction = ai_predict_wait_time(existing)
         return {"already_exists": True, "entry": existing, "ai_prediction": prediction}
