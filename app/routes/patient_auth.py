@@ -162,36 +162,38 @@ def book_appointment_patient(
 
 @router.get("/my-queue")
 def my_queue(authorization: Optional[str] = Header(None)):
-    """Get patient's current queue status. AI prediction only for token bookings."""
+    """Get ALL patient queue entries across all doctors."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     from app.services.queue_service import (
-        get_active_queue_for_patient, get_current_serving_token,
-        calculate_position, ai_predict_wait_time,
+        get_all_active_queue_for_patient,
+        get_current_serving_token,
+        calculate_position,
+        ai_predict_wait_time,
     )
 
-    entry = get_active_queue_for_patient(patient_id)
-    if not entry:
-        return {"has_active_queue": False}
+    entries = get_all_active_queue_for_patient(patient_id)
+    if not entries:
+        return {"has_active_queue": False, "appointments": []}
 
-    booking_type = entry.get("booking_type", "appointment")
-    doctor = get_ref(f"doctors/{entry['doctor_id']}").get() or {}
+    appointments = []
+    for entry in entries:
+        booking_type = entry.get("booking_type", "appointment")
+        doctor = get_ref(f"doctors/{entry['doctor_id']}").get() or {}
+        appointments.append({
+            "token_number": entry["token_number"],
+            "doctor_name": doctor.get("name", ""),
+            "doctor_specialization": doctor.get("specialization", ""),
+            "current_serving_token": get_current_serving_token(entry["doctor_id"]),
+            "position_in_queue": calculate_position(entry),
+            "status": entry["status"],
+            "booking_type": booking_type,
+            "show_queue_status": booking_type == "token",
+            "appointment_time": entry.get("appointment_time"),
+            "check_in_time": entry.get("check_in_time"),
+            "estimated_wait_time": ai_predict_wait_time(entry) if booking_type == "token" else None,
+        })
 
-    response = {
-        "has_active_queue": True,
-        "token_number": entry["token_number"],
-        "doctor_name": doctor.get("name", ""),
-        "doctor_specialization": doctor.get("specialization", ""),
-        "current_serving_token": get_current_serving_token(entry["doctor_id"]),
-        "position_in_queue": calculate_position(entry),
-        "status": entry["status"],
-        "booking_type": booking_type,
-        "show_queue_status": booking_type == "token",
-        "appointment_time": entry.get("appointment_time"),
-        "check_in_time": entry.get("check_in_time"),
-        # AI prediction ONLY for token bookings
-        "estimated_wait_time": ai_predict_wait_time(entry) if booking_type == "token" else None,
-    }
-    return response
+    return {"has_active_queue": True, "appointments": appointments}

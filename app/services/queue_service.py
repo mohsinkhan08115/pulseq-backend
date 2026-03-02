@@ -24,6 +24,18 @@ def get_active_queue_for_patient(patient_id: str) -> Optional[dict]:
     return None
 
 
+def get_all_active_queue_for_patient(patient_id: str) -> List[dict]:
+    """Returns ALL active queue entries for a patient across all doctors."""
+    all_entries = get_ref("queue_entries").get() or {}
+    results = []
+    for entry_id, entry in all_entries.items():
+        if (entry.get("patient_id") == patient_id and
+                entry.get("status") in ["confirmed", "waiting", "serving"]):
+            entry["id"] = entry_id
+            results.append(entry)
+    return results
+
+
 def get_active_queue_for_patient_and_doctor(patient_id: str, doctor_id: str) -> Optional[dict]:
     """Check if patient already has active token with this specific doctor."""
     all_entries = get_ref("queue_entries").get() or {}
