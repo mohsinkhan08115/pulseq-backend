@@ -1,12 +1,17 @@
 from typing import List, Optional
 from app.core.database import get_ref
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 import random
 import statistics
 
 DEFAULT_AVG_DURATION = 15
 PEAK_HOURS = [9, 10, 11, 14, 15, 16]
+
+
+def now_utc() -> datetime:
+    """Always return timezone-aware UTC time."""
+    return datetime.now(timezone.utc)
 
 
 def get_active_queue_for_patient(patient_id: str) -> Optional[dict]:
@@ -28,7 +33,7 @@ def get_current_serving_token(doctor_id: str) -> int:
 
 
 def get_next_token_number(doctor_id: str) -> int:
-    today = datetime.now().date().isoformat()
+    today = now_utc().date().isoformat()
     all_entries = get_ref("queue_entries").get() or {}
     tokens = [
         e.get("token_number", 0)
@@ -58,7 +63,7 @@ def get_historical_avg_duration(doctor_id: str) -> float:
         if e.get("doctor_id") == doctor_id
         and e.get("actual_duration") is not None
         and isinstance(e.get("actual_duration"), (int, float))
-        and 2 <= e.get("actual_duration", 0) <= 120  # Sanity bounds
+        and 2 <= e.get("actual_duration", 0) <= 120
     ]
     if len(durations) >= 3:
         avg = statistics.median(durations)
@@ -70,7 +75,7 @@ def ai_predict_wait_time(entry: dict) -> dict:
     """
     AI-powered wait time prediction using multiple factors:
     1. Historical consultation durations (median-based, outlier-resistant)
-    2. Peak hour multiplier  
+    2. Peak hour multiplier
     3. Day-of-week patterns
     4. Queue depth weighting
     """
@@ -78,31 +83,28 @@ def ai_predict_wait_time(entry: dict) -> dict:
     position = calculate_position(entry)
     patients_ahead = position - 1
 
-    # Factor 1: Historical AI-learned average
     avg_duration = get_historical_avg_duration(doctor_id)
 
-    # Factor 2: Peak hour multiplier
-    hour = datetime.now().hour
-    day_of_week = datetime.now().weekday()
+    now = now_utc()
+    hour = now.hour
+    day_of_week = now.weekday()
 
     if hour in PEAK_HOURS:
         time_multiplier = 1.3
-    elif hour in [12, 13]:  # Lunch hour slowdown
+    elif hour in [12, 13]:
         time_multiplier = 0.85
     else:
         time_multiplier = 1.0
 
-    # Factor 3: Day-of-week pattern (Mon/Fri/Sat busier)
     if day_of_week in [0, 4]:
         day_multiplier = 1.1
-    elif day_of_week == 5:  # Saturday
+    elif day_of_week == 5:
         day_multiplier = 1.2
     else:
         day_multiplier = 1.0
 
-    # Factor 4: Queue depth efficiency loss
     all_entries = get_ref("queue_entries").get() or {}
-    today = datetime.now().date().isoformat()
+    today = now.date().isoformat()
     total_today = sum(
         1 for e in all_entries.values()
         if e.get("doctor_id") == doctor_id
@@ -111,24 +113,24 @@ def ai_predict_wait_time(entry: dict) -> dict:
     )
     depth_factor = 1.0 + (min(total_today, 20) * 0.01)
 
-    # Calculate AI estimate
     base_estimate = patients_ahead * avg_duration
     ai_estimate = base_estimate * time_multiplier * day_multiplier * depth_factor
-
-    # Small uncertainty buffer
     uncertainty = ai_estimate * random.uniform(-0.05, 0.08)
     final_estimate = max(0, int(ai_estimate + uncertainty))
 
-    # Confidence score based on historical data volume
     all_durations_count = sum(
         1 for e in all_entries.values()
         if e.get("doctor_id") == doctor_id and e.get("actual_duration") is not None
     )
     confidence = min(95, 60 + (all_durations_count * 2))
 
+    # ✅ KEY FIX: Use Z suffix so Flutter knows this is UTC and converts to local time
+    estimated_dt = now + timedelta(minutes=final_estimate)
+    estimated_time_str = estimated_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     return {
         "estimated_minutes": final_estimate,
-        "estimated_time": (datetime.now() + timedelta(minutes=final_estimate)).isoformat(),
+        "estimated_time": estimated_time_str,
         "consultation_duration": int(avg_duration),
         "patients_ahead": patients_ahead,
         "confidence_percent": confidence,
@@ -142,29 +144,26 @@ def ai_predict_wait_time(entry: dict) -> dict:
     }
 
 
-# Keep legacy function for backward compatibility
 def estimate_wait_time(entry: dict) -> dict:
     return ai_predict_wait_time(entry)
 
 
 def book_token(patient_id: str, doctor_id: str) -> dict:
-    """Book a token for patient - token-based queue booking with AI prediction."""
-    # Check if patient already has active token booking
     existing = get_active_queue_for_patient(patient_id)
     if existing and existing.get("booking_type") == "token":
         prediction = ai_predict_wait_time(existing)
         return {"already_exists": True, "entry": existing, "ai_prediction": prediction}
 
-    appointment_time = datetime.now()
+    appointment_time = now_utc()
     token = get_next_token_number(doctor_id)
     entry_id = str(uuid.uuid4())
-    today = datetime.now().date().isoformat()
+    today = now_utc().date().isoformat()
 
     entry_data = {
         "token_number": token,
         "patient_id": patient_id,
         "doctor_id": doctor_id,
-        "appointment_time": appointment_time.isoformat(),
+        "appointment_time": appointment_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "status": "confirmed",
         "booking_type": "token",
         "check_in_time": None,
@@ -187,7 +186,7 @@ def book_token(patient_id: str, doctor_id: str) -> dict:
 
 def create_queue_entry(patient_id: str, doctor_id: str, appointment_time: datetime,
                        booking_type: str = "appointment") -> dict:
-    today = datetime.now().date().isoformat()
+    today = now_utc().date().isoformat()
     token = get_next_token_number(doctor_id)
     entry_id = str(uuid.uuid4())
     entry_data = {
@@ -214,7 +213,7 @@ def check_in_patient(patient_id: str) -> Optional[dict]:
         return None
     get_ref(f"queue_entries/{entry['id']}").update({
         "status": "waiting",
-        "check_in_time": datetime.now().isoformat(),
+        "check_in_time": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     entry["status"] = "waiting"
     return entry
@@ -228,7 +227,7 @@ def start_consultation(patient_id: str, doctor_id: str) -> Optional[dict]:
                 entry.get("status") == "waiting"):
             get_ref(f"queue_entries/{entry_id}").update({
                 "status": "serving",
-                "consultation_start_time": datetime.now().isoformat(),
+                "consultation_start_time": now_utc().strftime("%Y-%m-%dT%H:%M:%SZ"),
             })
             entry["id"] = entry_id
             entry["status"] = "serving"
@@ -242,14 +241,18 @@ def complete_consultation(patient_id: str, doctor_id: str) -> Optional[dict]:
         if (entry.get("patient_id") == patient_id and
                 entry.get("doctor_id") == doctor_id and
                 entry.get("status") == "serving"):
-            end_time = datetime.now()
+            end_time = now_utc()
             duration = None
             if entry.get("consultation_start_time"):
-                start = datetime.fromisoformat(entry["consultation_start_time"])
-                duration = int((end_time - start).total_seconds() / 60)
+                try:
+                    start_str = entry["consultation_start_time"].replace("Z", "+00:00")
+                    start = datetime.fromisoformat(start_str)
+                    duration = int((end_time - start).total_seconds() / 60)
+                except Exception:
+                    pass
             get_ref(f"queue_entries/{entry_id}").update({
                 "status": "completed",
-                "consultation_end_time": end_time.isoformat(),
+                "consultation_end_time": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "actual_duration": duration,
             })
             entry["id"] = entry_id
