@@ -1,4 +1,4 @@
-# app/routes/patient_auth.py  (NEW FILE)
+# app/routes/patient_auth.py
 # Patient-facing authentication and booking endpoints
 
 from fastapi import APIRouter, HTTPException, Header
@@ -93,27 +93,57 @@ def get_doctors(authorization: Optional[str] = Header(None)):
 @router.post("/book-token")
 def book_token_patient(
     doctor_id: str,
+    appointment_time: Optional[str] = None,  # optional appointment details
     authorization: Optional[str] = Header(None)
 ):
-    """Book a walk-in token. Returns AI wait prediction."""
+    """
+    Book a walk-in queue token.
+    - Returns AI wait prediction.
+    - Prevents booking if patient already has an active token with ANY doctor.
+    - Optionally accepts appointment_time for scheduling context.
+    """
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    from app.services.queue_service import book_token
+    from app.services.queue_service import get_all_active_queue_for_patient, book_token
+
+    # ── Issue 2: Prevent double booking ───────────────────────────────────
+    existing = get_all_active_queue_for_patient(patient_id)
+    active = [
+        e for e in existing
+        if e.get("status") not in ("completed", "cancelled")
+    ]
+    if active:
+        existing_doctor = get_ref(f"doctors/{active[0]['doctor_id']}").get() or {}
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have an active token with Dr. {existing_doctor.get('name', 'another doctor')}. "
+                   f"Please cancel it before booking a new one."
+        )
+
     result = book_token(patient_id, doctor_id)
     entry = result["entry"]
     prediction = result["ai_prediction"]
     doctor = get_ref(f"doctors/{doctor_id}").get() or {}
 
+    # Save appointment_time to the entry if provided
+    if appointment_time:
+        try:
+            entry_ref = get_ref(f"queue/{entry['id']}")
+            entry_ref.update({"appointment_time": appointment_time})
+        except Exception:
+            pass  # Non-critical, don't fail the booking
+
     return {
         "success": True,
         "already_existed": result["already_exists"],
-        "message": "You already have an active token" if result["already_exists"] else "Token booked successfully",
+        "message": "Token booked successfully",
         "token_number": entry["token_number"],
         "booking_type": "token",
         "doctor_name": doctor.get("name", ""),
         "doctor_specialization": doctor.get("specialization", ""),
+        "appointment_time": appointment_time,
         "status": entry["status"],
         "show_queue_status": True,
         "ai_prediction": {
@@ -124,39 +154,6 @@ def book_token_patient(
             "confidence_percent": prediction.get("confidence_percent", 75),
             "peak_hour": prediction.get("peak_hour", False),
         }
-    }
-
-
-@router.post("/book-appointment")
-def book_appointment_patient(
-    doctor_id: str,
-    appointment_time: str,
-    authorization: Optional[str] = Header(None)
-):
-    """Book a scheduled appointment. No AI queue prediction for appointments."""
-    patient_id = verify_token_header(authorization)
-    if not patient_id:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    from app.services.queue_service import create_queue_entry
-    from datetime import datetime
-
-    try:
-        appointment_dt = datetime.fromisoformat(appointment_time)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid appointment_time format")
-
-    entry = create_queue_entry(patient_id, doctor_id, appointment_dt, booking_type="appointment")
-    doctor = get_ref(f"doctors/{doctor_id}").get() or {}
-
-    return {
-        "success": True,
-        "message": "Appointment booked successfully",
-        "token_number": entry["token_number"],
-        "booking_type": "appointment",
-        "doctor_name": doctor.get("name", ""),
-        "appointment_time": appointment_time,
-        "show_queue_status": False,  # NO AI prediction for appointments
     }
 
 
@@ -180,9 +177,10 @@ def my_queue(authorization: Optional[str] = Header(None)):
 
     appointments = []
     for entry in entries:
-        booking_type = entry.get("booking_type", "appointment")
+        booking_type = entry.get("booking_type", "token")
         doctor = get_ref(f"doctors/{entry['doctor_id']}").get() or {}
         appointments.append({
+            "entry_id": entry.get("id", ""),  # needed for cancel
             "token_number": entry["token_number"],
             "doctor_name": doctor.get("name", ""),
             "doctor_specialization": doctor.get("specialization", ""),
@@ -197,3 +195,62 @@ def my_queue(authorization: Optional[str] = Header(None)):
         })
 
     return {"has_active_queue": True, "appointments": appointments}
+
+
+@router.delete("/cancel")
+def cancel_booking(
+    entry_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Cancel the patient's active token.
+    - If entry_id is provided, cancels that specific booking.
+    - Otherwise cancels the first active booking found.
+    """
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.queue_service import get_all_active_queue_for_patient
+
+    entries = get_all_active_queue_for_patient(patient_id)
+    if not entries:
+        raise HTTPException(status_code=404, detail="No active booking found")
+
+    # Find the specific entry to cancel
+    entry_to_cancel = None
+    if entry_id:
+        for e in entries:
+            if e.get("id") == entry_id:
+                entry_to_cancel = e
+                break
+        if not entry_to_cancel:
+            raise HTTPException(status_code=404, detail="Booking not found")
+    else:
+        # Cancel the first active one
+        active = [e for e in entries if e.get("status") not in ("completed", "cancelled")]
+        if not active:
+            raise HTTPException(status_code=404, detail="No active booking to cancel")
+        entry_to_cancel = active[0]
+
+    # Cannot cancel if already being served
+    if entry_to_cancel.get("status") == "serving":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel — consultation is already in progress"
+        )
+
+    # Update status to cancelled in database
+    try:
+        queue_ref = get_ref(f"queue/{entry_to_cancel['id']}")
+        queue_ref.update({
+            "status": "cancelled",
+            "cancelled_at": __import__("datetime").datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cancel: {str(e)}")
+
+    return {
+        "success": True,
+        "message": f"Token #{entry_to_cancel['token_number']} cancelled successfully"
+    }
