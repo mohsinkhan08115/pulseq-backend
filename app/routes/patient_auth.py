@@ -130,7 +130,7 @@ def book_token_patient(
     # Save appointment_time to the entry if provided
     if appointment_time:
         try:
-            entry_ref = get_ref(f"queue/{entry['id']}")
+            entry_ref = get_ref(f"queue_entries/{entry['id']}")
             entry_ref.update({"appointment_time": appointment_time})
         except Exception:
             pass  # Non-critical, don't fail the booking
@@ -242,7 +242,7 @@ def cancel_booking(
 
     # Update status to cancelled in database
     try:
-        queue_ref = get_ref(f"queue/{entry_to_cancel['id']}")
+        queue_ref = get_ref(f"queue_entries/{entry_to_cancel['id']}")
         queue_ref.update({
             "status": "cancelled",
             "cancelled_at": __import__("datetime").datetime.utcnow().isoformat()
