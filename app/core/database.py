@@ -15,8 +15,8 @@ def init_firebase():
             cred_dict = json.loads(cred_json)
             cred = credentials.Certificate(cred_dict)
         else:
-            # When running locally (using serviceAccountKey.json file)
-            cred = credentials.Certificate("serviceAccountKey.json")
+            # When running locally (using service-account.json file)
+            cred = credentials.Certificate("service-account.json")
 
         firebase_admin.initialize_app(cred, {
             "databaseURL": FIREBASE_DB_URL
