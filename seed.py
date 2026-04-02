@@ -46,22 +46,22 @@ def seed():
          "phone": "+923000000001", "date_of_birth": "2004-03-09",
          "location": "Lahore",    "total_visits": 5, "last_visit": "2025-02-05",
          "medical_history_summary": "Regular checkups", "is_active": True,
-         "patient_number": 1},
+         "patient_number": 1, "hashed_password": get_password_hash("doctor123")},
         {"name": "Ali Khan",     "email": "ali@example.com",
          "phone": "+923210000002", "date_of_birth": "1990-05-15",
          "location": "Karachi",   "total_visits": 8, "last_visit": "2025-02-03",
          "medical_history_summary": "Hypertension patient", "is_active": True,
-         "patient_number": 2},
+         "patient_number": 2, "hashed_password": get_password_hash("doctor456")},
         {"name": "Fatima Ahmed", "email": "fatima@example.com",
          "phone": "+923330000003", "date_of_birth": "1985-08-20",
          "location": "Islamabad", "total_visits": 12, "last_visit": "2025-02-01",
          "medical_history_summary": "Diabetes Type 2", "is_active": True,
-         "patient_number": 3},
+         "patient_number": 3, "hashed_password": get_password_hash("doctor789")},
         {"name": "Usman Raza",   "email": "usman@example.com",
          "phone": "+923450000004", "date_of_birth": "1995-12-10",
          "location": "Lahore",    "total_visits": 3, "last_visit": "2025-01-28",
          "medical_history_summary": "Asthma patient", "is_active": True,
-         "patient_number": 4},
+         "patient_number": 4, "hashed_password": get_password_hash("doctor000")},
     ]
     pat_ids = []
     for p in patients:
@@ -212,11 +212,11 @@ def seed():
     print("  ahmed@pulseq.com  / doctor123")
     print("  sarah@pulseq.com  / doctor456")
     print("  hassan@pulseq.com / doctor789")
-    print("\nPatient numbers:")
-    print("  1 = Hamda        | +923000000001  (5 records)")
-    print("  2 = Ali Khan     | +923210000002  (3 records)")
-    print("  3 = Fatima Ahmed | +923330000003  (3 records)")
-    print("  4 = Usman Raza   | +923450000004  (3 records)")
+    print("\nPatient credentials:")
+    print("  Hamda        | +923000000001 | doctor123")
+    print("  Ali Khan     | +923210000002 | doctor456")
+    print("  Fatima Ahmed | +923330000003 | doctor789")
+    print("  Usman Raza   | +923450000004 | doctor000")
 
 if __name__ == "__main__":
     seed()

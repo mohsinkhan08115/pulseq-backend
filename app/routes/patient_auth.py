@@ -1,11 +1,9 @@
 # app/routes/patient_auth.py
-# Patient-facing authentication and booking endpoints
-
 from fastapi import APIRouter, HTTPException, Header
 from typing import Optional
 from pydantic import BaseModel
 from app.core.database import get_ref
-from app.core.security import create_access_token, verify_token_header
+from app.core.security import create_access_token, verify_token_header, verify_password
 
 router = APIRouter(prefix="/patient-auth", tags=["Patient Auth"])
 
@@ -13,6 +11,7 @@ router = APIRouter(prefix="/patient-auth", tags=["Patient Auth"])
 class PatientLoginRequest(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
+    password: str
 
 
 def _patient_to_dict(patient_id: str, patient: dict) -> dict:
@@ -26,12 +25,13 @@ def _patient_to_dict(patient_id: str, patient: dict) -> dict:
         "total_visits": patient.get("total_visits", 0),
         "last_visit": patient.get("last_visit"),
         "medical_history_summary": patient.get("medical_history_summary"),
+        "patient_number": patient.get("patient_number"),
     }
 
 
 @router.post("/login")
 def patient_login(request: PatientLoginRequest):
-    """Patient login by phone or email - no password needed."""
+    """Patient login by phone or email with password."""
     if not request.phone and not request.email:
         raise HTTPException(status_code=400, detail="Provide email or phone")
 
@@ -44,6 +44,9 @@ def patient_login(request: PatientLoginRequest):
             (request.phone and patient.get("phone") == request.phone)
         )
         if match:
+            hashed = patient.get("hashed_password")
+            if not hashed or not verify_password(request.password, hashed):
+                raise HTTPException(status_code=401, detail="Incorrect password")
             token = create_access_token(data={"sub": patient_id, "role": "patient"})
             return {
                 "access_token": token,
@@ -69,9 +72,39 @@ def get_profile(authorization: Optional[str] = Header(None)):
     return _patient_to_dict(patient_id, patient)
 
 
+@router.get("/my-doctors")
+def get_my_doctors(authorization: Optional[str] = Header(None)):
+    """Get all doctors linked to this patient."""
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    all_links = get_ref("doctor_patient").get() or {}
+    doctor_ids = [
+        link["doctor_id"]
+        for link in all_links.values()
+        if link.get("patient_id") == patient_id
+    ]
+
+    doctors = []
+    for doc_id in doctor_ids:
+        doc = get_ref(f"doctors/{doc_id}").get()
+        if doc and doc.get("is_active", True):
+            doctors.append({
+                "id": doc_id,
+                "name": doc.get("name", ""),
+                "specialization": doc.get("specialization", ""),
+                "hospital": doc.get("hospital", ""),
+                "phone": doc.get("phone", ""),
+                "email": doc.get("email", ""),
+            })
+
+    return {"doctors": doctors}
+
+
 @router.get("/doctors")
-def get_doctors(authorization: Optional[str] = Header(None)):
-    """All available doctors for patient to choose from."""
+def get_all_doctors(authorization: Optional[str] = Header(None)):
+    """Get all active doctors (for booking)."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -90,25 +123,60 @@ def get_doctors(authorization: Optional[str] = Header(None)):
     }
 
 
+@router.get("/my-records")
+def get_my_records(authorization: Optional[str] = Header(None)):
+    """Get all medical records for the logged-in patient."""
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    patient = get_ref(f"patients/{patient_id}").get()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    all_records = get_ref("medical_records").get() or {}
+    records = []
+    for rec_id, record in all_records.items():
+        if record.get("patient_id") != patient_id:
+            continue
+        doc = get_ref(f"doctors/{record.get('doctor_id', '')}").get() or {}
+        records.append({
+            "id": rec_id,
+            "patient_id": patient_id,
+            "patient_name": patient.get("name", ""),
+            "doctor_id": record.get("doctor_id", ""),
+            "doctor_name": doc.get("name", ""),
+            "doctor_specialization": doc.get("specialization", ""),
+            "diagnosis": record.get("diagnosis", ""),
+            "visit_date": record.get("visit_date", ""),
+            "symptoms": record.get("symptoms", []),
+            "prescription": record.get("prescription", ""),
+            "notes": record.get("notes", ""),
+            "follow_up_date": record.get("follow_up_date"),
+            "vital_signs": record.get("vital_signs"),
+        })
+
+    records.sort(key=lambda x: x.get("visit_date", ""), reverse=True)
+    return {
+        "success": True,
+        "count": len(records),
+        "patient_name": patient.get("name", ""),
+        "records": records,
+    }
+
+
 @router.post("/book-token")
 def book_token_patient(
     doctor_id: str,
-    appointment_time: Optional[str] = None,  # optional appointment details
+    appointment_time: Optional[str] = None,
     authorization: Optional[str] = Header(None)
 ):
-    """
-    Book a walk-in queue token.
-    - Returns AI wait prediction.
-    - Prevents booking if patient already has an active token with ANY doctor.
-    - Optionally accepts appointment_time for scheduling context.
-    """
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     from app.services.queue_service import get_all_active_queue_for_patient, book_token
 
-    # ── Issue 2: Prevent double booking ───────────────────────────────────
     existing = get_all_active_queue_for_patient(patient_id)
     active = [
         e for e in existing
@@ -127,13 +195,12 @@ def book_token_patient(
     prediction = result["ai_prediction"]
     doctor = get_ref(f"doctors/{doctor_id}").get() or {}
 
-    # Save appointment_time to the entry if provided
     if appointment_time:
         try:
             entry_ref = get_ref(f"queue_entries/{entry['id']}")
             entry_ref.update({"appointment_time": appointment_time})
         except Exception:
-            pass  # Non-critical, don't fail the booking
+            pass
 
     return {
         "success": True,
@@ -159,7 +226,6 @@ def book_token_patient(
 
 @router.get("/my-queue")
 def my_queue(authorization: Optional[str] = Header(None)):
-    """Get ALL patient queue entries across all doctors."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -180,7 +246,7 @@ def my_queue(authorization: Optional[str] = Header(None)):
         booking_type = entry.get("booking_type", "token")
         doctor = get_ref(f"doctors/{entry['doctor_id']}").get() or {}
         appointments.append({
-            "entry_id": entry.get("id", ""),  # needed for cancel
+            "entry_id": entry.get("id", ""),
             "token_number": entry["token_number"],
             "doctor_name": doctor.get("name", ""),
             "doctor_specialization": doctor.get("specialization", ""),
@@ -202,11 +268,6 @@ def cancel_booking(
     entry_id: Optional[str] = None,
     authorization: Optional[str] = Header(None)
 ):
-    """
-    Cancel the patient's active token.
-    - If entry_id is provided, cancels that specific booking.
-    - Otherwise cancels the first active booking found.
-    """
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -217,7 +278,6 @@ def cancel_booking(
     if not entries:
         raise HTTPException(status_code=404, detail="No active booking found")
 
-    # Find the specific entry to cancel
     entry_to_cancel = None
     if entry_id:
         for e in entries:
@@ -227,20 +287,17 @@ def cancel_booking(
         if not entry_to_cancel:
             raise HTTPException(status_code=404, detail="Booking not found")
     else:
-        # Cancel the first active one
         active = [e for e in entries if e.get("status") not in ("completed", "cancelled")]
         if not active:
             raise HTTPException(status_code=404, detail="No active booking to cancel")
         entry_to_cancel = active[0]
 
-    # Cannot cancel if already being served
     if entry_to_cancel.get("status") == "serving":
         raise HTTPException(
             status_code=400,
             detail="Cannot cancel — consultation is already in progress"
         )
 
-    # Update status to cancelled in database
     try:
         queue_ref = get_ref(f"queue_entries/{entry_to_cancel['id']}")
         queue_ref.update({
