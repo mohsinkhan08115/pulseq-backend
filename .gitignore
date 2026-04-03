@@ -18,4 +18,8 @@ venv/
 Thumbs.db
 
 # Firebase — private key, NEVER commit
+service-account.json
+
+service-account.json
+
 serviceAccountKey.json
