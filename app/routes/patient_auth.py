@@ -2,10 +2,13 @@
 from fastapi import APIRouter, HTTPException, Header
 from typing import Optional, List
 from pydantic import BaseModel
+from datetime import datetime, timezone, timedelta
 from app.core.database import get_ref
 from app.core.security import create_access_token, verify_token_header, verify_password
 
 router = APIRouter(prefix="/patient-auth", tags=["Patient Auth"])
+
+MINIMUM_BOOKING_GAP_MINUTES = 15
 
 
 class PatientLoginRequest(BaseModel):
@@ -34,9 +37,41 @@ def _patient_to_dict(patient_id: str, patient: dict) -> dict:
     }
 
 
+def _check_booking_gap(patient_id: str) -> Optional[int]:
+    """
+    Check if patient made a booking in the last 15 minutes.
+    Returns minutes remaining if gap not met, None if OK to book.
+    """
+    all_entries = get_ref("queue_entries").get() or {}
+    now = datetime.now(timezone.utc)
+    min_gap = timedelta(minutes=MINIMUM_BOOKING_GAP_MINUTES)
+
+    latest_booking_time = None
+    for entry in all_entries.values():
+        if entry.get("patient_id") != patient_id:
+            continue
+        raw = entry.get("appointment_time") or entry.get("created_at")
+        if not raw:
+            continue
+        try:
+            t = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if latest_booking_time is None or t > latest_booking_time:
+                latest_booking_time = t
+        except Exception:
+            continue
+
+    if latest_booking_time is None:
+        return None  # No previous booking, OK
+
+    elapsed = now - latest_booking_time
+    if elapsed < min_gap:
+        remaining = int((min_gap - elapsed).total_seconds() / 60) + 1
+        return remaining
+    return None
+
+
 @router.post("/login")
 def patient_login(request: PatientLoginRequest):
-    """Patient login by phone or email with password."""
     if not request.phone and not request.email:
         raise HTTPException(status_code=400, detail="Provide email or phone")
 
@@ -79,7 +114,6 @@ def get_profile(authorization: Optional[str] = Header(None)):
 
 @router.get("/my-doctors")
 def get_my_doctors(authorization: Optional[str] = Header(None)):
-    """Get all doctors linked to this patient."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -109,7 +143,6 @@ def get_my_doctors(authorization: Optional[str] = Header(None)):
 
 @router.get("/doctors")
 def get_all_doctors(authorization: Optional[str] = Header(None)):
-    """Get all active doctors (for booking)."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -130,7 +163,6 @@ def get_all_doctors(authorization: Optional[str] = Header(None)):
 
 @router.get("/my-records")
 def get_my_records(authorization: Optional[str] = Header(None)):
-    """Get all medical records for the logged-in patient."""
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -170,6 +202,55 @@ def get_my_records(authorization: Optional[str] = Header(None)):
     }
 
 
+@router.get("/queue-preview")
+def queue_preview(
+    doctor_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Get estimated wait time for a doctor WITHOUT booking.
+    Used to show wait time before the patient confirms booking.
+    """
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.services.queue_service import get_next_token_number, ai_predict_wait_time, get_historical_avg_duration
+    from app.core.database import get_ref as _ref
+    from datetime import datetime, timezone
+    import uuid
+
+    doctor = _ref(f"doctors/{doctor_id}").get() or {}
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    # Build a fake entry to get prediction without saving
+    token = get_next_token_number(doctor_id)
+    fake_entry = {
+        "token_number": token,
+        "patient_id": patient_id,
+        "doctor_id": doctor_id,
+        "appointment_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "confirmed",
+        "booking_type": "token",
+        "date": datetime.now(timezone.utc).date().isoformat(),
+    }
+    prediction = ai_predict_wait_time(fake_entry)
+    avg_duration = get_historical_avg_duration(doctor_id)
+
+    return {
+        "doctor_name": doctor.get("name", ""),
+        "doctor_specialization": doctor.get("specialization", ""),
+        "next_token": token,
+        "estimated_wait_minutes": prediction["estimated_minutes"],
+        "estimated_time": prediction["estimated_time"],
+        "patients_ahead": prediction["patients_ahead"],
+        "consultation_duration": int(avg_duration),
+        "confidence_percent": prediction.get("confidence_percent", 75),
+        "peak_hour": prediction.get("peak_hour", False),
+    }
+
+
 @router.post("/book-token")
 def book_token_patient(
     doctor_id: str,
@@ -178,12 +259,22 @@ def book_token_patient(
 ):
     """
     Book a single token with a doctor.
-    - NO restriction: patient can book multiple tokens with same or different doctors.
-    - AI wait time predicted and returned immediately.
+    Rules:
+    - Patient must wait 15 minutes between any two bookings.
+    - Multiple bookings with same or different doctors are allowed after the gap.
     """
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Check 15-minute gap between bookings
+    minutes_remaining = _check_booking_gap(patient_id)
+    if minutes_remaining is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Please wait {minutes_remaining} more minute(s) before booking again. "
+                   f"A minimum {MINIMUM_BOOKING_GAP_MINUTES}-minute gap is required between bookings."
+        )
 
     from app.services.queue_service import book_token
 
@@ -229,8 +320,7 @@ def book_multi_token_patient(
 ):
     """
     Book tokens with multiple doctors sequentially.
-    - Each next doctor scheduled slot_duration_minutes after previous.
-    - No restrictions on same doctor or existing tokens.
+    Same 15-minute gap rule applies.
     """
     patient_id = verify_token_header(authorization)
     if not patient_id:
@@ -238,6 +328,13 @@ def book_multi_token_patient(
 
     if not data.doctor_ids:
         raise HTTPException(status_code=400, detail="doctor_ids list cannot be empty")
+
+    minutes_remaining = _check_booking_gap(patient_id)
+    if minutes_remaining is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Please wait {minutes_remaining} more minute(s) before booking again."
+        )
 
     from app.services.queue_service import book_multi_doctor_token
 
