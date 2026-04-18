@@ -208,6 +208,106 @@ def book_token(patient_id: str, doctor_id: str) -> dict:
     }
 
 
+def book_multi_doctor_token(patient_id: str, doctor_ids: List[str], slot_duration: int = 15) -> List[dict]:
+    """
+    Book queue tokens for multiple doctors sequentially.
+    - First doctor: uses current queue position normally.
+    - Each subsequent doctor: scheduled slot_duration minutes after previous.
+    """
+    results = []
+    prev_estimated_time: Optional[datetime] = None
+
+    for doctor_id in doctor_ids:
+        # Check if already booked with this doctor
+        existing = get_active_queue_for_patient_and_doctor(patient_id, doctor_id)
+        if existing and existing.get("booking_type") == "token":
+            prediction = ai_predict_wait_time(existing)
+            doctor = get_ref(f"doctors/{doctor_id}").get() or {}
+            patient = get_ref(f"patients/{patient_id}").get() or {}
+            results.append({
+                "already_exists": True,
+                "doctor_id": doctor_id,
+                "doctor_name": doctor.get("name", ""),
+                "patient_name": patient.get("name", ""),
+                "token_number": existing["token_number"],
+                "status": existing["status"],
+                "ai_prediction": {
+                    "estimated_minutes": prediction["estimated_minutes"],
+                    "estimated_time": prediction["estimated_time"],
+                    "consultation_duration": prediction["consultation_duration"],
+                    "patients_ahead": prediction["patients_ahead"],
+                    "confidence_percent": prediction.get("confidence_percent", 75),
+                    "peak_hour": prediction.get("peak_hour", False),
+                }
+            })
+            # Update prev time for next doctor calculation
+            try:
+                prev_estimated_time = datetime.strptime(
+                    prediction["estimated_time"], "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc) + timedelta(minutes=slot_duration)
+            except Exception:
+                prev_estimated_time = now_utc() + timedelta(minutes=slot_duration)
+            continue
+
+        # Get token number
+        token = get_next_token_number(doctor_id)
+        entry_id = str(uuid.uuid4())
+        today = now_utc().date().isoformat()
+
+        # Determine appointment time
+        if prev_estimated_time is not None:
+            appointment_time = prev_estimated_time
+        else:
+            appointment_time = now_utc()
+
+        entry_data = {
+            "token_number": token,
+            "patient_id": patient_id,
+            "doctor_id": doctor_id,
+            "appointment_time": appointment_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "status": "confirmed",
+            "booking_type": "token",
+            "check_in_time": None,
+            "consultation_start_time": None,
+            "consultation_end_time": None,
+            "actual_duration": None,
+            "date": today,
+        }
+        get_ref(f"queue_entries/{entry_id}").set(entry_data)
+        entry_data["id"] = entry_id
+
+        prediction = ai_predict_wait_time(entry_data)
+        doctor = get_ref(f"doctors/{doctor_id}").get() or {}
+        patient = get_ref(f"patients/{patient_id}").get() or {}
+
+        results.append({
+            "already_exists": False,
+            "doctor_id": doctor_id,
+            "doctor_name": doctor.get("name", ""),
+            "patient_name": patient.get("name", ""),
+            "token_number": token,
+            "status": "confirmed",
+            "ai_prediction": {
+                "estimated_minutes": prediction["estimated_minutes"],
+                "estimated_time": prediction["estimated_time"],
+                "consultation_duration": prediction["consultation_duration"],
+                "patients_ahead": prediction["patients_ahead"],
+                "confidence_percent": prediction.get("confidence_percent", 75),
+                "peak_hour": prediction.get("peak_hour", False),
+            }
+        })
+
+        # Next doctor starts after this one finishes
+        try:
+            prev_estimated_time = datetime.strptime(
+                prediction["estimated_time"], "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc) + timedelta(minutes=slot_duration)
+        except Exception:
+            prev_estimated_time = now_utc() + timedelta(minutes=slot_duration)
+
+    return results
+
+
 def create_queue_entry(patient_id: str, doctor_id: str, appointment_time: datetime,
                        booking_type: str = "appointment") -> dict:
     today = now_utc().date().isoformat()
