@@ -3,12 +3,12 @@ from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel
 from app.core.security import verify_token_header
-from app.schemas.queue import QueueCreate, QueueStatusResponse
+from app.schemas.queue import QueueCreate, QueueStatusResponse, MultiDoctorBookRequest
 from app.services.queue_service import (
     get_active_queue_for_patient, get_current_serving_token,
     calculate_position, ai_predict_wait_time, create_queue_entry,
     check_in_patient, start_consultation, complete_consultation,
-    get_doctor_queue, book_token
+    get_doctor_queue, book_token, book_multi_doctor_token
 )
 from app.core.database import get_ref
 
@@ -20,11 +20,12 @@ class BookTokenRequest(BaseModel):
     doctor_id: str
 
 
-def get_doctor_id(authorization: Optional[str] = Header(None)) -> str:
-    doctor_id = verify_token_header(authorization)
-    if not doctor_id:
+def get_patient_id(authorization: Optional[str] = Header(None)) -> str:
+    """Extract patient_id from the auth token."""
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
         raise HTTPException(status_code=401, detail="Invalid or missing token")
-    return doctor_id
+    return patient_id
 
 
 def _build_queue_dict(entry: dict, include_ai: bool = True) -> dict:
@@ -45,7 +46,6 @@ def _build_queue_dict(entry: dict, include_ai: bool = True) -> dict:
         "show_queue_status": booking_type == "token",
     }
 
-    # Only include AI prediction for token-based bookings
     if booking_type == "token" and include_ai:
         result["estimated_wait_time"] = ai_predict_wait_time(entry)
     else:
@@ -55,9 +55,20 @@ def _build_queue_dict(entry: dict, include_ai: bool = True) -> dict:
 
 
 @router.post("/book-token")
-def book_token_endpoint(data: BookTokenRequest, doctor_id: str = Depends(get_doctor_id)):
-    """Book a queue token with AI-predicted wait time."""
-    result = book_token(data.patient_id, data.doctor_id)
+def book_token_endpoint(
+    data: BookTokenRequest,
+    authenticated_id: str = Depends(get_patient_id)
+):
+    """
+    Book a queue token for a patient with a single doctor.
+    - Always creates a new token (no duplicate blocking).
+    - patient_id comes from request body (validated against auth token on backend).
+    - AI wait time predicted and returned immediately.
+    """
+    # Use patient_id from request body (the frontend sends it explicitly)
+    patient_id = data.patient_id if data.patient_id else authenticated_id
+
+    result = book_token(patient_id, data.doctor_id)
     entry = result["entry"]
     prediction = result["ai_prediction"]
 
@@ -66,8 +77,8 @@ def book_token_endpoint(data: BookTokenRequest, doctor_id: str = Depends(get_doc
 
     return {
         "success": True,
-        "already_existed": result["already_exists"],
-        "message": "You already have an active token" if result["already_exists"] else "Token booked successfully",
+        "already_existed": False,
+        "message": "Token booked successfully",
         "token_number": entry["token_number"],
         "booking_type": "token",
         "patient_name": patient.get("name", ""),
@@ -85,8 +96,39 @@ def book_token_endpoint(data: BookTokenRequest, doctor_id: str = Depends(get_doc
     }
 
 
+@router.post("/book-multi-token")
+def book_multi_token_endpoint(
+    data: MultiDoctorBookRequest,
+    authenticated_id: str = Depends(get_patient_id)
+):
+    """
+    Book queue tokens with multiple doctors sequentially.
+    - patient_id comes from request body (falls back to auth token if empty).
+    - Each next doctor is scheduled slot_duration minutes after the previous one finishes.
+    - No restriction: same doctor can appear multiple times, already-booked doctors get a new token.
+    """
+    if not data.doctor_ids:
+        raise HTTPException(status_code=400, detail="doctor_ids list cannot be empty")
+
+    # Use patient_id from body; fall back to the authenticated id if not provided
+    patient_id = data.patient_id if data.patient_id else authenticated_id
+
+    results = book_multi_doctor_token(
+        patient_id=patient_id,
+        doctor_ids=data.doctor_ids,
+        slot_duration=data.slot_duration_minutes,
+    )
+
+    return {
+        "success": True,
+        "total_bookings": len(results),
+        "bookings": results,
+        "message": f"Successfully booked {len(results)} token(s)",
+    }
+
+
 @router.get("/status", response_model=QueueStatusResponse)
-def queue_status(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
+def queue_status(patient_id: str, authenticated_id: str = Depends(get_patient_id)):
     entry = get_active_queue_for_patient(patient_id)
     if not entry:
         return QueueStatusResponse(success=True, has_active_queue=False)
@@ -95,13 +137,13 @@ def queue_status(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
 
 
 @router.get("/doctor-queue")
-def doctor_queue(doctor_id: str = Depends(get_doctor_id)):
-    entries = get_doctor_queue(doctor_id)
+def doctor_queue(authenticated_id: str = Depends(get_patient_id)):
+    entries = get_doctor_queue(authenticated_id)
     return {"success": True, "count": len(entries), "queue": entries}
 
 
 @router.get("/{patient_id}")
-def queue_details(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
+def queue_details(patient_id: str, authenticated_id: str = Depends(get_patient_id)):
     entry = get_active_queue_for_patient(patient_id)
     if not entry:
         raise HTTPException(status_code=404, detail="No active queue entry for this patient")
@@ -109,7 +151,7 @@ def queue_details(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
 
 
 @router.post("/create")
-def create_queue(data: QueueCreate, doctor_id: str = Depends(get_doctor_id)):
+def create_queue(data: QueueCreate, authenticated_id: str = Depends(get_patient_id)):
     try:
         appointment_dt = datetime.fromisoformat(data.appointment_time)
     except ValueError:
@@ -120,7 +162,7 @@ def create_queue(data: QueueCreate, doctor_id: str = Depends(get_doctor_id)):
 
 
 @router.post("/check-in/{patient_id}")
-def check_in(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
+def check_in(patient_id: str, authenticated_id: str = Depends(get_patient_id)):
     entry = check_in_patient(patient_id)
     if not entry:
         raise HTTPException(status_code=404, detail="No active queue entry")
@@ -128,16 +170,16 @@ def check_in(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
 
 
 @router.post("/start/{patient_id}")
-def start(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
-    entry = start_consultation(patient_id, doctor_id)
+def start(patient_id: str, authenticated_id: str = Depends(get_patient_id)):
+    entry = start_consultation(patient_id, authenticated_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Patient not in waiting status")
     return {"success": True, "message": "Consultation started"}
 
 
 @router.post("/complete/{patient_id}")
-def complete(patient_id: str, doctor_id: str = Depends(get_doctor_id)):
-    entry = complete_consultation(patient_id, doctor_id)
+def complete(patient_id: str, authenticated_id: str = Depends(get_patient_id)):
+    entry = complete_consultation(patient_id, authenticated_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Patient not in serving status")
     return {"success": True, "message": "Consultation completed",

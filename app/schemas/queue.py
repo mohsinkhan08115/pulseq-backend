@@ -49,4 +49,6 @@ class TokenBookingResult(BaseModel):
 
 class MultiDoctorBookingResult(BaseModel):
     success: bool
+    total_bookings: int
     bookings: List[dict]
+    message: str

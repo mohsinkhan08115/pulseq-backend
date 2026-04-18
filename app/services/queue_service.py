@@ -172,12 +172,11 @@ def estimate_wait_time(entry: dict) -> dict:
 
 
 def book_token(patient_id: str, doctor_id: str) -> dict:
-    # Check per doctor — same patient can book with different doctors
-    existing = get_active_queue_for_patient_and_doctor(patient_id, doctor_id)
-    if existing and existing.get("booking_type") == "token":
-        prediction = ai_predict_wait_time(existing)
-        return {"already_exists": True, "entry": existing, "ai_prediction": prediction}
-
+    """
+    Book a new token for the patient with the given doctor.
+    RESTRICTION REMOVED: A patient can book multiple tokens with the same doctor.
+    Each booking always creates a new token entry.
+    """
     appointment_time = now_utc()
     token = get_next_token_number(doctor_id)
     entry_id = str(uuid.uuid4())
@@ -213,48 +212,21 @@ def book_multi_doctor_token(patient_id: str, doctor_ids: List[str], slot_duratio
     Book queue tokens for multiple doctors sequentially.
     - First doctor: uses current queue position normally.
     - Each subsequent doctor: scheduled slot_duration minutes after previous.
+    - NO restriction on same doctor appearing multiple times in the list.
+    - NO restriction on patient already having tokens with these doctors.
+    Each call always creates a new token entry.
     """
     results = []
     prev_estimated_time: Optional[datetime] = None
 
     for doctor_id in doctor_ids:
-        # Check if already booked with this doctor
-        existing = get_active_queue_for_patient_and_doctor(patient_id, doctor_id)
-        if existing and existing.get("booking_type") == "token":
-            prediction = ai_predict_wait_time(existing)
-            doctor = get_ref(f"doctors/{doctor_id}").get() or {}
-            patient = get_ref(f"patients/{patient_id}").get() or {}
-            results.append({
-                "already_exists": True,
-                "doctor_id": doctor_id,
-                "doctor_name": doctor.get("name", ""),
-                "patient_name": patient.get("name", ""),
-                "token_number": existing["token_number"],
-                "status": existing["status"],
-                "ai_prediction": {
-                    "estimated_minutes": prediction["estimated_minutes"],
-                    "estimated_time": prediction["estimated_time"],
-                    "consultation_duration": prediction["consultation_duration"],
-                    "patients_ahead": prediction["patients_ahead"],
-                    "confidence_percent": prediction.get("confidence_percent", 75),
-                    "peak_hour": prediction.get("peak_hour", False),
-                }
-            })
-            # Update prev time for next doctor calculation
-            try:
-                prev_estimated_time = datetime.strptime(
-                    prediction["estimated_time"], "%Y-%m-%dT%H:%M:%SZ"
-                ).replace(tzinfo=timezone.utc) + timedelta(minutes=slot_duration)
-            except Exception:
-                prev_estimated_time = now_utc() + timedelta(minutes=slot_duration)
-            continue
-
-        # Get token number
         token = get_next_token_number(doctor_id)
         entry_id = str(uuid.uuid4())
         today = now_utc().date().isoformat()
 
-        # Determine appointment time
+        # Determine appointment time:
+        # - First doctor in list: use current time (queue position calculated normally)
+        # - Subsequent doctors: start after previous doctor's estimated end time
         if prev_estimated_time is not None:
             appointment_time = prev_estimated_time
         else:
@@ -297,7 +269,7 @@ def book_multi_doctor_token(patient_id: str, doctor_ids: List[str], slot_duratio
             }
         })
 
-        # Next doctor starts after this one finishes
+        # Next doctor starts slot_duration minutes after this doctor's estimated time
         try:
             prev_estimated_time = datetime.strptime(
                 prediction["estimated_time"], "%Y-%m-%dT%H:%M:%SZ"
