@@ -1,6 +1,6 @@
 # app/routes/patient_auth.py
 from fastapi import APIRouter, HTTPException, Header
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 from app.core.database import get_ref
 from app.core.security import create_access_token, verify_token_header, verify_password
@@ -12,6 +12,11 @@ class PatientLoginRequest(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     password: str
+
+
+class MultiTokenRequest(BaseModel):
+    doctor_ids: List[str]
+    slot_duration_minutes: int = 15
 
 
 def _patient_to_dict(patient_id: str, patient: dict) -> dict:
@@ -171,43 +176,36 @@ def book_token_patient(
     appointment_time: Optional[str] = None,
     authorization: Optional[str] = Header(None)
 ):
+    """
+    Book a single token with a doctor.
+    - NO restriction: patient can book multiple tokens with same or different doctors.
+    - AI wait time predicted and returned immediately.
+    """
     patient_id = verify_token_header(authorization)
     if not patient_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    from app.services.queue_service import get_all_active_queue_for_patient, book_token
-
-    existing = get_all_active_queue_for_patient(patient_id)
-    active = [
-        e for e in existing
-        if e.get("status") not in ("completed", "cancelled")
-    ]
-    if active:
-        existing_doctor = get_ref(f"doctors/{active[0]['doctor_id']}").get() or {}
-        raise HTTPException(
-            status_code=409,
-            detail=f"You already have an active token with Dr. {existing_doctor.get('name', 'another doctor')}. "
-                   f"Please cancel it before booking a new one."
-        )
+    from app.services.queue_service import book_token
 
     result = book_token(patient_id, doctor_id)
     entry = result["entry"]
     prediction = result["ai_prediction"]
     doctor = get_ref(f"doctors/{doctor_id}").get() or {}
+    patient = get_ref(f"patients/{patient_id}").get() or {}
 
     if appointment_time:
         try:
-            entry_ref = get_ref(f"queue_entries/{entry['id']}")
-            entry_ref.update({"appointment_time": appointment_time})
+            get_ref(f"queue_entries/{entry['id']}").update({"appointment_time": appointment_time})
         except Exception:
             pass
 
     return {
         "success": True,
-        "already_existed": result["already_exists"],
+        "already_existed": False,
         "message": "Token booked successfully",
         "token_number": entry["token_number"],
         "booking_type": "token",
+        "patient_name": patient.get("name", ""),
         "doctor_name": doctor.get("name", ""),
         "doctor_specialization": doctor.get("specialization", ""),
         "appointment_time": appointment_time,
@@ -221,6 +219,39 @@ def book_token_patient(
             "confidence_percent": prediction.get("confidence_percent", 75),
             "peak_hour": prediction.get("peak_hour", False),
         }
+    }
+
+
+@router.post("/book-multi-token")
+def book_multi_token_patient(
+    data: MultiTokenRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Book tokens with multiple doctors sequentially.
+    - Each next doctor scheduled slot_duration_minutes after previous.
+    - No restrictions on same doctor or existing tokens.
+    """
+    patient_id = verify_token_header(authorization)
+    if not patient_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not data.doctor_ids:
+        raise HTTPException(status_code=400, detail="doctor_ids list cannot be empty")
+
+    from app.services.queue_service import book_multi_doctor_token
+
+    results = book_multi_doctor_token(
+        patient_id=patient_id,
+        doctor_ids=data.doctor_ids,
+        slot_duration=data.slot_duration_minutes,
+    )
+
+    return {
+        "success": True,
+        "total_bookings": len(results),
+        "bookings": results,
+        "message": f"Successfully booked {len(results)} token(s)",
     }
 
 
